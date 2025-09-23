@@ -1,9 +1,17 @@
+# Core Framework
 fastapi==0.95.2
 uvicorn[standard]==0.23.2
+pydantic==1.10.12
+
+# Computer Vision & ML
 numpy==1.25.0
 opencv-python==4.8.0.76
 ultralytics==8.0.150
-paddleocr==2.8.1
+
+# OCR Components
 paddlepaddle==2.6.3
-pydantic==1.10.12
-easyocr
+paddleocr==2.8.1
+
+# Additional Dependencies
+python-multipart==0.0.6
+pillow>=8.0.0

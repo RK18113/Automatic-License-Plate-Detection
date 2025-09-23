@@ -1,0 +1,4 @@
+Global:
+  infer_mode: paddle
+  model_dir: ./
+  device: cpu

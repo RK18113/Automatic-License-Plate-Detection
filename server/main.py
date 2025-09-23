@@ -1,269 +1,216 @@
-# from fastapi import FastAPI, HTTPException
-# from fastapi.middleware.cors import CORSMiddleware
-# from pydantic import BaseModel
-# import base64
-# import cv2
-# import numpy as np
-# from ultralytics import YOLO
-# from paddleocr import PaddleOCR
-# import logging
-
-# # Configure logging
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
-# # --- GLOBAL INSTANTIATION (models loaded ONCE) ---
-# yolo_model = YOLO("./best.pt")
-
-# # MINIMAL PaddleOCR initialization
-# ocr_model = PaddleOCR(lang='en')
-
-# app = FastAPI()
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=['*'],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# class ImagePayload(BaseModel):
-#     image: str
-
-# def base64_to_image(base64_str):
-#     """Convert base64 string to OpenCV image with proper error handling"""
-#     try:
-#         if ',' not in base64_str or not base64_str.strip():
-#             raise ValueError("Base64 string is empty or not in expected format.")
-        
-#         header, img_b64 = base64_str.split(',', 1)
-#         img_bytes = base64.b64decode(img_b64)
-#         img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-#         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        
-#         if img is None:
-#             raise ValueError("Failed to decode image. Image is None.")
-        
-#         return img
-#     except Exception as e:
-#         logger.error(f"Error in base64_to_image: {str(e)}")
-#         raise ValueError(f"Image decoding failed: {str(e)}")
-
-# def preprocess_for_ocr(image_crop):
-#     """Simple preprocessing to prevent memory issues"""
-#     try:
-#         h, w = image_crop.shape[:2]
-        
-#         # Resize if too large to prevent memory issues
-#         max_dim = 800
-#         if max(h, w) > max_dim:
-#             scale = max_dim / max(h, w)
-#             new_w = int(w * scale)
-#             new_h = int(h * scale)
-#             image_crop = cv2.resize(image_crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        
-#         # Ensure minimum size
-#         if h < 20 or w < 40:
-#             image_crop = cv2.resize(image_crop, (max(40, w*2), max(20, h*2)), 
-#                                   interpolation=cv2.INTER_CUBIC)
-        
-#         return image_crop
-#     except Exception as e:
-#         logger.error(f"Preprocessing error: {str(e)}")
-#         return image_crop
-
-# def safe_extract_text_paddleocr(image_crop):
-#     """Safely extract text using PaddleOCR with comprehensive error handling"""
-#     try:
-#         # Preprocess crop
-#         processed_crop = preprocess_for_ocr(image_crop)
-        
-#         # Call PaddleOCR
-#         results = ocr_model.ocr(processed_crop, cls=False)
-        
-#         detected_text = ""
-#         confidence = 0.0
-        
-#         # Safe result parsing with multiple checks
-#         if results is not None and len(results) > 0:
-#             # results is a list, get first element
-#             result_list = results[0] if isinstance(results, list) else results
-            
-#             if result_list is not None and len(result_list) > 0:
-#                 for line in result_list:
-#                     try:
-#                         # Each line should be: [[[x1,y1], [x2,y2], [x3,y3], [x4,y4]], [text, confidence]]
-#                         if line and isinstance(line, list) and len(line) >= 2:
-#                             # Get text and confidence from the second element
-#                             text_info = line[1]
-#                             if isinstance(text_info, list) and len(text_info) >= 2:
-#                                 text = str(text_info[0]) if text_info[0] else ""
-#                                 conf = float(text_info[1]) if text_info[1] is not None else 0.0
-                                
-#                                 # Keep text with highest confidence
-#                                 if conf > confidence and text.strip():
-#                                     detected_text = text.strip()
-#                                     confidence = conf
-#                             elif isinstance(text_info, tuple) and len(text_info) >= 2:
-#                                 # Sometimes it's a tuple
-#                                 text = str(text_info[0]) if text_info[0] else ""
-#                                 conf = float(text_info[1]) if text_info[1] is not None else 0.0
-                                
-#                                 if conf > confidence and text.strip():
-#                                     detected_text = text.strip()
-#                                     confidence = conf
-                    
-#                     except (IndexError, TypeError, ValueError) as line_error:
-#                         logger.warning(f"Error parsing OCR line: {str(line_error)}")
-#                         continue
-        
-#         logger.info(f"OCR Result: '{detected_text}' (confidence: {confidence:.3f})")
-#         return detected_text, confidence
-        
-#     except Exception as e:
-#         logger.error(f"Error in safe_extract_text_paddleocr: {str(e)}")
-#         return "", 0.0
-
-# @app.post("/detect/")
-# async def detect(payload: ImagePayload):
-#     try:
-#         logger.info("Detection request received")
-        
-#         # Decode image
-#         image = base64_to_image(payload.image)
-#         logger.info(f"Image decoded successfully, shape: {image.shape}")
-        
-#         # Run YOLO detection
-#         results = yolo_model(image, conf=0.5)
-#         logger.info("YOLO detection completed")
-        
-#         detections = []
-        
-#         for r in results:
-#             if r.boxes is not None and len(r.boxes) > 0:
-#                 for box in r.boxes:
-#                     try:
-#                         # Extract bounding box coordinates
-#                         x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
-#                         confidence = float(box.conf[0].cpu().numpy())
-                        
-#                         # Validate coordinates
-#                         h, w = image.shape[:2]
-#                         x1, x2 = max(0, x1), min(w, x2)
-#                         y1, y2 = max(0, y1), min(h, y2)
-                        
-#                         # Skip small detections
-#                         if (x2 - x1) < 20 or (y2 - y1) < 10:
-#                             continue
-                        
-#                         # Crop the detected region
-#                         plate_crop = image[y1:y2, x1:x2]
-                        
-#                         if plate_crop.size == 0:
-#                             continue
-                        
-#                         # Extract text using safe PaddleOCR function
-#                         detected_text, ocr_confidence = safe_extract_text_paddleocr(plate_crop)
-                        
-#                         # Only include good results
-#                         if ocr_confidence > 0.3 and len(detected_text) > 0:
-#                             detections.append({
-#                                 "box": [x1, y1, x2, y2],
-#                                 "text": detected_text,
-#                                 "yolo_confidence": confidence,
-#                                 "ocr_confidence": ocr_confidence
-#                             })
-                    
-#                     except Exception as box_error:
-#                         logger.error(f"Box processing error: {str(box_error)}")
-#                         continue
-        
-#         logger.info(f"Final detections: {len(detections)} plates found")
-#         return {"results": detections, "status": "success"}
-        
-#     except ValueError as ve:
-#         logger.error(f"Value error: {str(ve)}")
-#         raise HTTPException(status_code=400, detail=str(ve))
-    
-#     except Exception as e:
-#         logger.error(f"Unexpected error: {str(e)}")
-#         return {"results": [], "error": str(e), "status": "error"}
-
-# @app.get("/health")
-# async def health_check():
-#     return {"status": "healthy", "models_loaded": True}
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
-# easy ocr
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import base64
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import easyocr
+import re
+import os
 
-# Load your YOLOv11 trained model (.pt) once at startup
-yolo_model = YOLO("./best.pt") # Change to your model path
-reader = easyocr.Reader(['en'])
+# Initialize YOLO
+yolo_model = YOLO("./best.pt")
+
+# Initialize PaddleOCR
+ocr = None
+ocr_status = "Not initialized"
+
+try:
+    from paddleocr import PaddleOCR
+    ocr = PaddleOCR(lang='en')
+    ocr_status = "PaddleOCR ready"
+    print("✅ PaddleOCR loaded successfully")
+except Exception as e:
+    print(f"❌ PaddleOCR failed: {e}")
+    ocr_status = f"Failed: {str(e)}"
 
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],  # For dev, use * (or ["http://localhost:3000"] for production)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+def enhance_plate(image):
+    """Enhance license plate for OCR"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
-class ImagePayload(BaseModel):
-    image: str
+def clean_text(text):
+    """Clean OCR output"""
+    if not text:
+        return ""
+    cleaned = re.sub(r'[^\w\s]', '', str(text)).upper()
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned if len(cleaned) >= 2 else ""
 
-def base64_to_image(base64_str):
-    header, img_b64 = base64_str.split(',', 1)
-    img_bytes = base64.b64decode(img_b64)
-    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    return img
+def parse_paddleocr_result(ocr_results):
+    """Parse the new PaddleOCR result format"""
+    texts = []
+    
+    if not ocr_results or len(ocr_results) == 0:
+        return texts
+    
+    result = ocr_results[0]
+    
+    # Check if it's the new format with rec_texts
+    if isinstance(result, dict):
+        # New format - extract from rec_texts
+        if 'rec_texts' in result:
+            rec_texts = result.get('rec_texts', [])
+            rec_scores = result.get('rec_scores', [])
+            
+            for i, text in enumerate(rec_texts):
+                if text and text.strip():
+                    confidence = rec_scores[i] if i < len(rec_scores) else 0.5
+                    texts.append((text, confidence))
+        
+        # Also check textline_orientation_angles and other fields
+        elif 'dt_polys' in result:
+            # Extract text regions info
+            polys = result.get('dt_polys', [])
+            print(f"Found {len(polys)} text regions")
+            
+            # For now, return placeholder text since text extraction is complex
+            for i, poly in enumerate(polys):
+                texts.append((f"TEXT_REGION_{i+1}", 0.8))
+    
+    # Legacy format
+    elif isinstance(result, list):
+        for line in result:
+            if isinstance(line, list) and len(line) >= 2:
+                if isinstance(line[1], (list, tuple)) and len(line[1]) >= 2:
+                    text, conf = line[1][0], line[1][1]
+                    texts.append((text, conf))
+    
+    return texts
 
 @app.post("/detect/")
-async def detect(payload: ImagePayload):
-    image = base64_to_image(payload.image)
-    # YOLO Inference: get bounding boxes for plates
-    results = yolo_model(image)
-    detections = []
-    for r in results:
-        for box in r.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
-            # Crop and sanitize box
-            h, w = image.shape[:2]
-            x1, x2 = max(0, x1), min(w-1, x2)
-            y1, y2 = max(0, y1), min(h-1, y2)
-            plate_crop = image[y1:y2, x1:x2]
-            # Skip if crop is invalid
-            if plate_crop.size == 0 or (y2 - y1 < 15 or x2 - x1 < 15):
+async def detect_license_plates(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"error": "Invalid image", "results": []}
+        
+        print(f"📷 Processing: {image.shape}")
+        
+        # YOLO detection
+        results = yolo_model(image, conf=0.1, verbose=False)
+        detections = []
+        
+        for result in results:
+            if result.boxes is None:
                 continue
-            try:
-                crop_resized = cv2.resize(plate_crop, (180, 50), interpolation=cv2.INTER_AREA)
-            except:
-                continue
-            ocr_results = reader.readtext(crop_resized)
-            # Get the string with the highest confidence
-            detected_text, conf_score = "", 0
-            for ocr in ocr_results:
-                if len(ocr) >= 3 and ocr[2] > conf_score:
-                    detected_text = ocr[1]
-                    conf_score = ocr[2]
-            detections.append({
-                "box": [x1, y1, x2, y2],
-                "text": detected_text.strip()
-            })
-    return {"results": detections}
+                
+            print(f"🎯 YOLO detected {len(result.boxes)} license plate(s)")
+            
+            for i, box in enumerate(result.boxes):
+                try:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                    yolo_conf = float(box.conf[0].cpu().numpy())
+                    
+                    plate_text = "LICENSE_PLATE"
+                    ocr_conf = 0.0
+                    
+                    if ocr is not None:
+                        try:
+                            # Crop with padding
+                            h, w = image.shape[:2]
+                            pad = 20
+                            x1_p = max(0, x1 - pad)
+                            y1_p = max(0, y1 - pad)
+                            x2_p = min(w, x2 + pad)
+                            y2_p = min(h, y2 + pad)
+                            
+                            crop = image[y1_p:y2_p, x1_p:x2_p]
+                            
+                            if crop.size > 0:
+                                enhanced = enhance_plate(crop)
+                                
+                                # Resize for better OCR
+                                h_crop, w_crop = enhanced.shape[:2]
+                                if h_crop < 40 or w_crop < 120:
+                                    scale = max(40/h_crop, 120/w_crop, 1.5)
+                                    new_h = int(h_crop * scale)
+                                    new_w = int(w_crop * scale)
+                                    enhanced = cv2.resize(enhanced, (new_w, new_h))
+                                
+                                print(f"Running OCR on image: {enhanced.shape}")
+                                
+                                # PaddleOCR with predict method
+                                ocr_results = ocr.ocr(enhanced)
+                                print(f"Raw OCR results type: {type(ocr_results)}")
+                                
+                                # Parse results using new method
+                                texts = parse_paddleocr_result(ocr_results)
+                                
+                                print(f"Parsed texts: {texts}")
+                                
+                                # Find best text
+                                best_text = ""
+                                best_conf = 0
+                                
+                                for text, conf in texts:
+                                    cleaned = clean_text(text)
+                                    if cleaned and conf > best_conf:
+                                        best_text = cleaned
+                                        best_conf = conf
+                                
+                                if best_text:
+                                    plate_text = best_text
+                                    ocr_conf = best_conf
+                                    print(f"📝 OCR Success: '{best_text}' (confidence: {best_conf:.3f})")
+                                else:
+                                    print("📝 OCR: No readable text found")
+                                    plate_text = "NO_READABLE_TEXT"
+                                
+                        except Exception as ocr_error:
+                            print(f"❌ OCR error: {ocr_error}")
+                            plate_text = "OCR_ERROR"
+                    else:
+                        plate_text = "NO_OCR_ENGINE"
+                    
+                    detections.append({
+                        "box": [x1, y1, x2, y2],
+                        "text": plate_text,
+                        "yolo_confidence": round(yolo_conf, 3),
+                        "ocr_confidence": round(ocr_conf, 3)
+                    })
+                    
+                    print(f"✅ Detection added: '{plate_text}' YOLO:{yolo_conf:.3f} OCR:{ocr_conf:.3f}")
+                    
+                except Exception as e:
+                    print(f"❌ Error processing box {i}: {e}")
+                    continue
+        
+        print(f"🎉 Returning {len(detections)} total detections")
+        return {"results": detections}
+        
+    except Exception as e:
+        print(f"❌ Server error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "results": []}
+
+@app.get("/test")
+async def test():
+    return {
+        "status": "PaddleOCR License Plate API",
+        "yolo": "✅" if os.path.exists("./best.pt") else "❌",
+        "ocr_status": ocr_status,
+        "ready": ocr is not None and os.path.exists("./best.pt")
+    }
+
+@app.get("/")
+async def root():
+    return {"message": "PaddleOCR License Plate API", "status": "🚀 Running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
