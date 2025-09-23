@@ -1,22 +1,47 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import Webcam from "react-webcam";
 import axios from "axios";
+import Header from "./components/Header";
+import CameraView from "./components/CameraView";
+import ControlPanel from "./components/ControlPanel";
+import ResultsPanel from "./components/ResultsPanel";
+import StatsCard from "./components/StatsCard";
+import Footer from "./components/Footer";
+import LoadingOverlay from "./components/LoadingOverlay";
+import "./index.css";
 
-const WIDTH = 640;
-const HEIGHT = 480;
-
-const fadeInStyle = {
-  animation: "fadein 0.5s",
-};
+const WIDTH = 800;
+const HEIGHT = 600;
 
 function App() {
   const webcamRef = useRef(null);
+  const imgRef = useRef(null);
+  
+  // States
   const [imageSrc, setImageSrc] = useState(null);
   const [detections, setDetections] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const imgRef = useRef(null);
   const [imgDims, setImgDims] = useState({ width: 0, height: 0 });
+  const [darkMode, setDarkMode] = useState(true);
+  const [totalDetections, setTotalDetections] = useState(0);
+  const [averageConfidence, setAverageConfidence] = useState(0);
+  const [processingTime, setProcessingTime] = useState(0);
+  const [apiStatus, setApiStatus] = useState('checking');
+
+  // Check API status on mount
+  useEffect(() => {
+    checkApiStatus();
+  }, []);
+
+  const checkApiStatus = async () => {
+    try {
+      const response = await axios.get("http://localhost:8000/test");
+      setApiStatus(response.data.ready ? 'online' : 'offline');
+    } catch (err) {
+      setApiStatus('offline');
+    }
+  };
 
   // Convert base64 image to File object
   const dataURLToFile = (dataurl, filename) => {
@@ -25,74 +50,60 @@ function App() {
     const bstr = atob(arr[1]);
     let n = bstr.length;
     const u8arr = new Uint8Array(n);
-
     while (n--) {
       u8arr[n] = bstr.charCodeAt(n);
     }
-
     return new File([u8arr], filename, { type: mime });
   };
 
-  // Handle detection on webcam capture
-  const handleDetect = async () => {
+  // Handle webcam capture
+  const handleCapture = async () => {
     if (!webcamRef.current) return;
     const capturedImage = webcamRef.current.getScreenshot();
     if (!capturedImage) return;
 
-    setLoading(true);
-    setError("");
-    setDetections([]);
-    setImageSrc(capturedImage);
-
-    const file = dataURLToFile(capturedImage, "capture.jpg");
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const response = await axios.post("http://localhost:8000/detect", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-      if (response.data.error) {
-        setError(response.data.error);
-        setDetections([]);
-      } else if (response.data.results) {
-        setDetections(response.data.results);
-      } else {
-        setDetections([]);
-      }
-    } catch (err) {
-      setError("Detection failed: " + err.message);
-      setDetections([]);
-    }
-    setLoading(false);
+    await processImage(dataURLToFile(capturedImage, "capture.jpg"), capturedImage);
   };
 
-  // Handle image upload
+  // Handle file upload
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    
+    const imageUrl = URL.createObjectURL(file);
+    await processImage(file, imageUrl);
+  };
 
+  // Process image function
+  const processImage = async (file, imageUrl) => {
     setLoading(true);
     setError("");
     setDetections([]);
-    setImageSrc(URL.createObjectURL(file));
-
+    setImageSrc(imageUrl);
+    
+    const startTime = Date.now();
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const response = await axios.post("http://localhost:8000/detect", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
+      const response = await axios.post("http://localhost:8000/detect/", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
+
+      const endTime = Date.now();
+      setProcessingTime(endTime - startTime);
+
       if (response.data.error) {
         setError(response.data.error);
         setDetections([]);
       } else if (response.data.results) {
-        setDetections(response.data.results);
+        const results = response.data.results;
+        setDetections(results);
+        setTotalDetections(prev => prev + results.length);
+        
+        // Calculate average confidence
+        const avgConf = results.reduce((sum, det) => sum + det.yolo_confidence, 0) / results.length;
+        setAverageConfidence(avgConf);
       } else {
         setDetections([]);
       }
@@ -103,7 +114,7 @@ function App() {
     setLoading(false);
   };
 
-  // Record image natural dimensions on load (used for scaling boxes)
+  // Handle image load
   const handleImageLoad = () => {
     if (imgRef.current) {
       setImgDims({
@@ -113,177 +124,81 @@ function App() {
     }
   };
 
-  // Calculate scale factors for bounding box coordinates
-  const getScaledBoxes = (box) => {
-    if (imgDims.width === 0 || imgDims.height === 0) return box;
-
-    const scaleX = WIDTH / imgDims.width;
-    const scaleY = HEIGHT / imgDims.height;
-
-    const [x1, y1, x2, y2] = box;
-
-    return [x1 * scaleX, y1 * scaleY, x2 * scaleX, y2 * scaleY];
+  // Clear results
+  const clearResults = () => {
+    setImageSrc(null);
+    setDetections([]);
+    setError("");
   };
 
   return (
-    <div
-      style={{
-        textAlign: "center",
-        padding: 20,
-        background: "linear-gradient(120deg, #232526 0%, #414345 100%)",
-        minHeight: "100vh",
-        color: "white",
-      }}
-    >
-      <Webcam
-        audio={false}
-        height={HEIGHT}
-        width={WIDTH}
-        ref={webcamRef}
-        screenshotFormat="image/jpeg"
-        videoConstraints={{ width: WIDTH, height: HEIGHT }}
-        style={{ borderRadius: 12 }}
+    <div className={`app ${darkMode ? 'dark' : 'light'}`}>
+      {loading && <LoadingOverlay />}
+      
+      <Header 
+        darkMode={darkMode} 
+        setDarkMode={setDarkMode}
+        apiStatus={apiStatus}
       />
-      <div style={{ marginTop: 10 }}>
-        <button
-          onClick={handleDetect}
-          disabled={loading}
-          style={{
-            padding: "12px 24px",
-            backgroundColor: loading ? "#888" : "#ffd600",
-            border: "none",
-            borderRadius: 8,
-            cursor: loading ? "not-allowed" : "pointer",
-            fontWeight: "bold",
-            fontSize: 16,
-            color: "#232526",
-          }}
-        >
-          {loading ? "Detecting..." : "Detect"}
-        </button>
-        <label
-          style={{
-            padding: "12px 24px",
-            backgroundColor: "#31343a",
-            color: "#ffd600",
-            borderRadius: 8,
-            marginLeft: 20,
-            cursor: loading ? "not-allowed" : "pointer",
-            fontWeight: "bold",
-          }}
-        >
-          Upload Image
-          <input
-            type="file"
-            accept="image/*"
-            onChange={handleUpload}
-            disabled={loading}
-            style={{ display: "none" }}
-          />
-        </label>
-      </div>
-
-      <div
-        style={{
-          position: "relative",
-          marginTop: 20,
-          display: imageSrc ? "inline-block" : "none",
-          borderRadius: 12,
-          boxShadow: "0 0 20px rgba(0,0,0,0.6)",
-        }}
-      >
-        {imageSrc && (
-          <>
-            <img
-              src={imageSrc}
-              alt="Captured"
-              ref={imgRef}
-              onLoad={handleImageLoad}
-              style={{ width: WIDTH, borderRadius: 12, height: HEIGHT }}
-            />
-            <svg
+      
+      <div className="main-container">
+        <div className="content-grid">
+          {/* Left Panel */}
+          <div className="left-panel">
+            <CameraView
+              webcamRef={webcamRef}
+              imageSrc={imageSrc}
+              imgRef={imgRef}
+              detections={detections}
               width={WIDTH}
               height={HEIGHT}
-              style={{ position: "absolute", top: 0, left: 0 }}
-            >
-              {detections.map((det, idx) => {
-                const [x1, y1, x2, y2] = getScaledBoxes(det.box);
+              handleImageLoad={handleImageLoad}
+              imgDims={imgDims}
+              error={error}
+            />
+          </div>
 
-                return (
-                  <g key={idx}>
-                    <rect
-                      x={x1}
-                      y={y1}
-                      width={x2 - x1}
-                      height={y2 - y1}
-                      fill="none"
-                      stroke="#00FF00"
-                      strokeWidth={3}
-                      rx={8}
-                    />
-                    <text
-                      x={x1 + 5}
-                      y={y1 - 5}
-                      fill="#00FF00"
-                      fontWeight="bold"
-                      fontSize="18"
-                      stroke="#000"
-                      strokeWidth="0.7"
-                    >
-                      {det.text}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
-          </>
-        )}
+          {/* Right Panel */}
+          <div className="right-panel">
+            <ControlPanel
+              onCapture={handleCapture}
+              onUpload={handleUpload}
+              onClear={clearResults}
+              loading={loading}
+              hasResults={detections.length > 0}
+            />
+
+            {/* Stats Cards */}
+            <div className="stats-grid">
+              <StatsCard
+                title="Total Detections"
+                value={totalDetections}
+                icon="🎯"
+                color="#4CAF50"
+              />
+              <StatsCard
+                title="Avg Confidence"
+                value={`${(averageConfidence * 100).toFixed(1)}%`}
+                icon="📊"
+                color="#2196F3"
+              />
+              <StatsCard
+                title="Processing Time"
+                value={`${processingTime}ms`}
+                icon="⚡"
+                color="#FF9800"
+              />
+            </div>
+
+            <ResultsPanel
+              detections={detections}
+              processingTime={processingTime}
+            />
+          </div>
+        </div>
       </div>
 
-      {detections.length > 0 && (
-        <div
-          style={{
-            marginTop: 20,
-            maxWidth: WIDTH,
-            marginLeft: "auto",
-            marginRight: "auto",
-            textAlign: "left",
-            color: "#ffd600",
-          }}
-        >
-          <h3>Detection Results</h3>
-          {detections.map((det, idx) => (
-            <div
-              key={idx}
-              style={{
-                padding: 10,
-                borderBottom: "1px solid #444",
-                fontSize: 16,
-                wordBreak: "break-word",
-              }}
-            >
-              <strong>Text:</strong> {det.text} <br />
-              <strong>Box:</strong> [{det.box.join(", ")}] <br />
-              <strong>YOLO Confidence:</strong> {(det.yolo_confidence*100).toFixed(1)}%{" "}
-              <br />
-              <strong>OCR Confidence:</strong> {(det.ocr_confidence*100).toFixed(1)}%
-            </div>
-          ))}
-        </div>
-      )}
-
-      <style>{`
-        @keyframes fadein {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
+      <Footer />
     </div>
   );
 }
