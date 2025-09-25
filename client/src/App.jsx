@@ -30,7 +30,7 @@ function App() {
 
   const checkApiStatus = async () => {
     try {
-      const response = await axios.get("http://localhost:8000/test");
+      const response = await axios.get("https://automatic-license-plate-detection.onrender.com");
       setApiStatus(response.data.ready ? 'online' : 'offline');
     } catch (err) {
       setApiStatus('offline');
